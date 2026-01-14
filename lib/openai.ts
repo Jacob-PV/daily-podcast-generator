@@ -58,7 +58,15 @@ Make the script sound natural when read aloud - use conversational language, rhe
   }
 
   try {
-    const parsed = JSON.parse(content);
+    // Remove markdown code blocks if present
+    let jsonContent = content;
+    if (content.includes('```json')) {
+      jsonContent = content.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+    } else if (content.includes('```')) {
+      jsonContent = content.replace(/```\n?/g, '');
+    }
+
+    const parsed = JSON.parse(jsonContent.trim());
     return {
       title: parsed.title,
       script: parsed.script,
@@ -74,15 +82,46 @@ Make the script sound natural when read aloud - use conversational language, rhe
 
 export async function generateAudio(script: string): Promise<Buffer> {
   const openai = getOpenAIClient();
-  const response = await openai.audio.speech.create({
-    model: 'tts-1',
-    voice: 'onyx',
-    input: script,
-    speed: 1.0,
-  });
 
-  const arrayBuffer = await response.arrayBuffer();
-  return Buffer.from(arrayBuffer);
+  // OpenAI TTS has a 4096 character limit, so we need to split long scripts
+  const MAX_CHARS = 4000; // Leave some buffer
+  const chunks: string[] = [];
+
+  // Split script into chunks at sentence boundaries
+  const sentences = script.split(/(?<=[.!?])\s+/);
+  let currentChunk = '';
+
+  for (const sentence of sentences) {
+    if ((currentChunk + ' ' + sentence).length > MAX_CHARS) {
+      if (currentChunk) {
+        chunks.push(currentChunk.trim());
+      }
+      currentChunk = sentence;
+    } else {
+      currentChunk = currentChunk ? currentChunk + ' ' + sentence : sentence;
+    }
+  }
+  if (currentChunk) {
+    chunks.push(currentChunk.trim());
+  }
+
+  // Generate audio for each chunk
+  const audioBuffers: Buffer[] = [];
+
+  for (const chunk of chunks) {
+    const response = await openai.audio.speech.create({
+      model: 'tts-1',
+      voice: 'onyx',
+      input: chunk,
+      speed: 1.0,
+    });
+
+    const arrayBuffer = await response.arrayBuffer();
+    audioBuffers.push(Buffer.from(arrayBuffer));
+  }
+
+  // Concatenate all audio buffers
+  return Buffer.concat(audioBuffers);
 }
 
 export async function generatePodcast(topicIds: string[]): Promise<{
