@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { generatePodcast } from '@/lib/openai';
 import { PodcastGenerationRequest } from '@/types';
 
-export const maxDuration = 60; // Allow up to 60 seconds for podcast generation
+export const maxDuration = 120; // Allow up to 120 seconds for podcast generation (multiple TTS calls)
 
 export async function POST(req: NextRequest) {
   try {

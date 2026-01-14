@@ -56,7 +56,6 @@ export default function Home() {
     try {
       // Stage 1: Researching
       updateStage('researching', 'in_progress');
-      await new Promise((resolve) => setTimeout(resolve, 500));
 
       // Make API call
       const response = await fetch('/api/generate-podcast', {
@@ -65,26 +64,34 @@ export default function Home() {
         body: JSON.stringify({ topics: selectedTopics }),
       });
 
+      // Read response text first (can only read body once)
+      const responseText = await response.text();
+
+      // Try to parse as JSON
+      let data;
+      try {
+        data = JSON.parse(responseText);
+      } catch {
+        throw new Error('Server error. Please try again.');
+      }
+
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to generate podcast');
+        throw new Error(data.error || 'Failed to generate podcast');
       }
 
       updateStage('researching', 'completed');
 
       // Stage 2: Writing
       updateStage('writing', 'in_progress');
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      await new Promise((resolve) => setTimeout(resolve, 500));
       updateStage('writing', 'completed');
 
       // Stage 3: Recording
       updateStage('recording', 'in_progress');
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-
-      const data: PodcastGenerationResponse = await response.json();
+      await new Promise((resolve) => setTimeout(resolve, 500));
 
       updateStage('recording', 'completed');
-      setPodcast(data);
+      setPodcast(data as PodcastGenerationResponse);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong');
       setStages(initialStages);
