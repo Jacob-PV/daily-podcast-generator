@@ -109,6 +109,13 @@ Make each segment sound natural when read aloud - use conversational language, r
   }
 }
 
+// TTS configuration for podcast narration
+const TTS_CONFIG = {
+  model: 'gpt-4o-mini-tts' as const,
+  voice: 'ash' as const,
+  instructions: 'Deliver this like a polished news anchor. Clear articulation, steady pace, confident tone, minimal drama.',
+};
+
 // Generate audio for a text segment, handling chunking for long text
 async function generateSegmentAudio(text: string): Promise<Buffer> {
   const openai = getOpenAIClient();
@@ -117,10 +124,10 @@ async function generateSegmentAudio(text: string): Promise<Buffer> {
   // Split text into chunks at sentence boundaries if needed
   if (text.length <= MAX_CHARS) {
     const response = await openai.audio.speech.create({
-      model: 'tts-1',
-      voice: 'onyx',
+      model: TTS_CONFIG.model,
+      voice: TTS_CONFIG.voice,
       input: text,
-      speed: 1.0,
+      instructions: TTS_CONFIG.instructions,
     });
     return Buffer.from(await response.arrayBuffer());
   }
@@ -147,10 +154,10 @@ async function generateSegmentAudio(text: string): Promise<Buffer> {
   const audioBuffers: Buffer[] = [];
   for (const chunk of chunks) {
     const response = await openai.audio.speech.create({
-      model: 'tts-1',
-      voice: 'onyx',
+      model: TTS_CONFIG.model,
+      voice: TTS_CONFIG.voice,
       input: chunk,
-      speed: 1.0,
+      instructions: TTS_CONFIG.instructions,
     });
     audioBuffers.push(Buffer.from(await response.arrayBuffer()));
   }
