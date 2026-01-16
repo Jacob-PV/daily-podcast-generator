@@ -1,5 +1,14 @@
 import OpenAI from 'openai';
 import { getTopicsByIds } from './topics';
+import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'fs';
+import { join } from 'path';
+import ffmpeg from 'fluent-ffmpeg';
+import ffmpegStatic from 'ffmpeg-static';
+
+// Set ffmpeg path
+if (ffmpegStatic) {
+  ffmpeg.setFfmpegPath(ffmpegStatic);
+}
 
 function getOpenAIClient(): OpenAI {
   const apiKey = process.env.OPENAI_API_KEY;
@@ -165,20 +174,67 @@ async function generateSegmentAudio(text: string): Promise<Buffer> {
   return Buffer.concat(audioBuffers);
 }
 
-// Generate the signature audio separator (1-2 second musical transition)
-async function generateSeparator(): Promise<Buffer> {
-  const openai = getOpenAIClient();
+// Adjust volume of audio file using ffmpeg
+async function adjustVolume(inputBuffer: Buffer, volumeLevel: number = 0.3): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const tempDir = join(process.cwd(), '.tmp');
+    const inputPath = join(tempDir, `input-${Date.now()}.mp3`);
+    const outputPath = join(tempDir, `output-${Date.now()}.mp3`);
 
-  // Use a soft musical phrase that works well with TTS
-  // The "..." creates a natural pause, and we use a different voice for variety
-  const response = await openai.audio.speech.create({
-    model: 'tts-1',
-    voice: 'shimmer', // Different voice for the separator adds distinction
-    input: '...', // Brief pause creates a clean audio break
-    speed: 0.8, // Slightly slower for emphasis
+    // Ensure temp directory exists
+    if (!existsSync(tempDir)) {
+      const { mkdirSync } = require('fs');
+      mkdirSync(tempDir, { recursive: true });
+    }
+
+    // Write input buffer to temp file
+    writeFileSync(inputPath, inputBuffer);
+
+    ffmpeg(inputPath)
+      .audioFilters(`volume=${volumeLevel}`)
+      .toFormat('mp3')
+      .on('end', () => {
+        const outputBuffer = readFileSync(outputPath);
+        // Clean up temp files
+        try {
+          unlinkSync(inputPath);
+          unlinkSync(outputPath);
+        } catch {
+          // Ignore cleanup errors
+        }
+        resolve(outputBuffer);
+      })
+      .on('error', (err: Error) => {
+        // Clean up temp files on error
+        try {
+          if (existsSync(inputPath)) unlinkSync(inputPath);
+          if (existsSync(outputPath)) unlinkSync(outputPath);
+        } catch {
+          // Ignore cleanup errors
+        }
+        reject(err);
+      })
+      .save(outputPath);
   });
+}
 
-  return Buffer.from(await response.arrayBuffer());
+// Cache for the volume-adjusted separator audio
+let cachedSeparatorAudio: Buffer | null = null;
+
+// Get the signature audio separator from file with volume adjustment
+async function getSeparatorAudio(): Promise<Buffer> {
+  // Return cached version if available
+  if (cachedSeparatorAudio) {
+    return cachedSeparatorAudio;
+  }
+
+  // Read the ambient magic wash audio file as the separator
+  const audioPath = join(process.cwd(), 'audio', 'ambient-magic-wash.mp3');
+  const rawAudio = readFileSync(audioPath);
+
+  // Adjust volume to 30% to blend well with TTS narration
+  cachedSeparatorAudio = await adjustVolume(rawAudio, 0.3);
+  return cachedSeparatorAudio;
 }
 
 export async function generateAudio(script: string): Promise<Buffer> {
@@ -199,10 +255,10 @@ async function generateStructuredAudio(
     audioBuffers.push(await generateSegmentAudio(intro));
   }
 
-  // Generate separator once and reuse
+  // Load separator audio file once and reuse (with volume adjustment)
   let separatorAudio: Buffer | null = null;
   if (stories.length > 0) {
-    separatorAudio = await generateSeparator();
+    separatorAudio = await getSeparatorAudio();
   }
 
   // Generate audio for each story with separator between them
