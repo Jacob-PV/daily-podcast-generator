@@ -112,7 +112,7 @@ Make each segment sound natural when read aloud - use conversational language, r
 // TTS configuration for podcast narration
 const TTS_CONFIG = {
   model: 'gpt-4o-mini-tts' as const,
-  voice: 'ash' as const,
+  voice: 'marin' as const,
   instructions: 'Deliver this like a polished news anchor. Clear articulation, steady pace, confident tone, minimal drama.',
 };
 
