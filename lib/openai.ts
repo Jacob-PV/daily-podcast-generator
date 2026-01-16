@@ -10,12 +10,22 @@ function getOpenAIClient(): OpenAI {
   return new OpenAI({ apiKey });
 }
 
+interface StorySource {
+  title: string;
+  url: string;
+}
+
+interface PodcastStory {
+  title: string;
+  content: string;
+  sources: StorySource[];
+}
+
 interface StructuredScript {
   title: string;
   intro: string;
-  stories: string[];
+  stories: PodcastStory[];
   outro: string;
-  fullScript: string;
 }
 
 export async function generatePodcastScript(topicIds: string[]): Promise<StructuredScript> {
@@ -30,45 +40,74 @@ export async function generatePodcastScript(topicIds: string[]): Promise<Structu
     day: 'numeric',
   });
 
-  const response = await openai.chat.completions.create({
+  // Use web search to find real, current news stories
+  const response = await openai.responses.create({
+    model: 'gpt-4o',
+    tools: [{ type: 'web_search_preview' }],
+    input: `Find 2-3 significant, factual news stories from today or the past few days about: ${topicNames}.
+
+For each story, I need:
+- The actual headline/title
+- Key facts (what happened, who's involved, numbers/data if applicable)
+- At least one reliable source URL
+
+Focus on substantive news - no fluff or opinion pieces. Look for stories from reputable outlets like Reuters, AP, BBC, NYT, WSJ, TechCrunch, Wired, etc.`,
+  });
+
+  // Extract the research from web search
+  const researchContent = response.output_text || '';
+
+  // Now generate the podcast script based on real research
+  const scriptResponse = await openai.chat.completions.create({
     model: 'gpt-4o',
     messages: [
       {
         role: 'system',
-        content: `You are a professional podcast host creating a daily personalized podcast. Your style is engaging, informative, and conversational. You speak naturally with appropriate pauses and transitions.`,
+        content: `You are a professional podcast host creating a concise, fact-based daily news podcast. Your style is direct, informative, and engaging - like a polished news anchor. Avoid filler phrases, unnecessary commentary, or speculation. Stick to the facts.`,
       },
       {
         role: 'user',
-        content: `Create a 5-minute podcast script (approximately 750 words) for ${today} covering the following topics: ${topicNames}.
+        content: `Create a podcast script for ${today} based on this research:
+
+${researchContent}
 
 Requirements:
-1. Start with a warm, engaging introduction mentioning it's the listener's personalized daily podcast
-2. Cover 2-3 interesting stories total across the selected topics
-3. Each story should be a self-contained segment that can stand alone
-4. Include thought-provoking insights or analysis
-5. End with a brief summary and an uplifting closing
+1. INTRO: Brief (2-3 sentences max) - just welcome listeners and preview what's coming
+2. STORIES: 2-3 stories, each with:
+   - A clear headline/title
+   - Factual content (100-150 words each) - no fluff, just the key information
+   - Include specific details: names, numbers, dates when available
+   - IMPORTANT: Include the actual source URLs from the research
+3. OUTRO: Very brief (1-2 sentences) - just sign off
 
-IMPORTANT: Format the response as JSON with separate segments for the intro, each story, and the outro. This allows us to add audio transitions between stories.
+DO NOT:
+- Add unnecessary commentary like "isn't that interesting?" or "what do you think?"
+- Speculate or editorialize
+- Include transition phrases between stories (we add audio transitions)
+- Make up any facts - only use information from the research above
 
+Format as JSON:
 {
-  "title": "A catchy episode title",
-  "intro": "The opening introduction segment...",
+  "title": "Brief episode title",
+  "intro": "Brief welcome...",
   "stories": [
-    "First story segment covering one topic...",
-    "Second story segment covering another topic...",
-    "Third story segment if applicable..."
+    {
+      "title": "Story Headline",
+      "content": "The story content for audio...",
+      "sources": [
+        {"title": "Source Name", "url": "https://..."}
+      ]
+    }
   ],
-  "outro": "The closing summary and farewell..."
-}
-
-Make each segment sound natural when read aloud - use conversational language, rhetorical questions, and varied sentence structures. Do NOT include transition phrases between stories as we will add an audio jingle between them.`,
+  "outro": "Brief signoff..."
+}`,
       },
     ],
-    temperature: 0.7,
-    max_tokens: 2500,
+    temperature: 0.5,
+    max_tokens: 3000,
   });
 
-  const content = response.choices[0]?.message?.content;
+  const content = scriptResponse.choices[0]?.message?.content;
   if (!content) {
     throw new Error('Failed to generate podcast script');
   }
@@ -84,28 +123,31 @@ Make each segment sound natural when read aloud - use conversational language, r
 
     const parsed = JSON.parse(jsonContent.trim());
 
-    // Construct full script for display purposes
-    const fullScript = [
-      parsed.intro,
-      ...parsed.stories,
-      parsed.outro
-    ].join('\n\n---\n\n');
+    // Ensure stories have the correct structure
+    const stories: PodcastStory[] = (parsed.stories || []).map((story: { title?: string; content?: string; sources?: StorySource[] } | string) => {
+      if (typeof story === 'string') {
+        return { title: 'Story', content: story, sources: [] };
+      }
+      return {
+        title: story.title || 'Story',
+        content: story.content || '',
+        sources: story.sources || [],
+      };
+    });
 
     return {
       title: parsed.title,
       intro: parsed.intro,
-      stories: parsed.stories || [],
+      stories,
       outro: parsed.outro,
-      fullScript,
     };
   } catch {
-    // If JSON parsing fails, treat as single segment (backwards compatibility)
+    // If JSON parsing fails, return minimal structure
     return {
       title: `Your Daily Podcast - ${today}`,
       intro: content,
       stories: [],
       outro: '',
-      fullScript: content,
     };
   }
 }
@@ -189,7 +231,7 @@ export async function generateAudio(script: string): Promise<Buffer> {
 // Generate audio for structured podcast with separators between stories
 async function generateStructuredAudio(
   intro: string,
-  stories: string[],
+  stories: PodcastStory[],
   outro: string
 ): Promise<Buffer> {
   const audioBuffers: Buffer[] = [];
@@ -212,8 +254,8 @@ async function generateStructuredAudio(
       audioBuffers.push(separatorAudio);
     }
 
-    // Generate story audio
-    audioBuffers.push(await generateSegmentAudio(stories[i]));
+    // Generate story audio (use content field)
+    audioBuffers.push(await generateSegmentAudio(stories[i].content));
   }
 
   // Add separator before outro
@@ -231,27 +273,36 @@ async function generateStructuredAudio(
 
 export async function generatePodcast(topicIds: string[]): Promise<{
   audioBase64: string;
-  script: string;
   title: string;
   duration: number;
+  intro: string;
+  stories: PodcastStory[];
+  outro: string;
 }> {
   // Generate structured script
-  const { intro, stories, outro, fullScript, title } = await generatePodcastScript(topicIds);
+  const { intro, stories, outro, title } = await generatePodcastScript(topicIds);
 
   // Generate audio with separators between segments
   const audioBuffer = await generateStructuredAudio(intro, stories, outro);
   const audioBase64 = audioBuffer.toString('base64');
 
+  // Calculate total word count for duration estimate
+  const introWords = intro.split(/\s+/).length;
+  const storyWords = stories.reduce((sum, s) => sum + s.content.split(/\s+/).length, 0);
+  const outroWords = outro.split(/\s+/).length;
+  const totalWords = introWords + storyWords + outroWords;
+
   // Estimate duration (roughly 150 words per minute for TTS, plus separator time)
-  const wordCount = fullScript.split(/\s+/).length;
-  const separatorCount = stories.length + (outro ? 1 : 0); // Separators between segments
+  const separatorCount = stories.length + (outro ? 1 : 0);
   const separatorDuration = separatorCount * 1.5; // ~1.5 seconds per separator
-  const duration = Math.ceil((wordCount / 150) * 60) + separatorDuration;
+  const duration = Math.ceil((totalWords / 150) * 60) + separatorDuration;
 
   return {
     audioBase64,
-    script: fullScript,
     title,
     duration,
+    intro,
+    stories,
+    outro,
   };
 }

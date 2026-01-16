@@ -177,7 +177,9 @@ export default function Home() {
               audioBase64={podcast.audioBase64}
               title={podcast.title}
               duration={podcast.duration}
-              script={podcast.script}
+              intro={podcast.intro}
+              stories={podcast.stories}
+              outro={podcast.outro}
               onRegenerate={handleRegenerate}
             />
           </section>

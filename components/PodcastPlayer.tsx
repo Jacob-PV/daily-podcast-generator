@@ -10,13 +10,17 @@ import {
   ChevronDown,
   ChevronUp,
   RotateCcw,
+  ExternalLink,
 } from 'lucide-react';
+import { PodcastStory } from '@/types';
 
 interface PodcastPlayerProps {
   audioBase64: string;
   title: string;
   duration: number;
-  script: string;
+  intro: string;
+  stories: PodcastStory[];
+  outro: string;
   onRegenerate: () => void;
 }
 
@@ -26,7 +30,9 @@ export function PodcastPlayer({
   audioBase64,
   title,
   duration,
-  script,
+  intro,
+  stories,
+  outro,
   onRegenerate,
 }: PodcastPlayerProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -35,7 +41,7 @@ export function PodcastPlayer({
   const [volume, setVolume] = useState(1);
   const [isMuted, setIsMuted] = useState(false);
   const [speed, setSpeed] = useState(1);
-  const [showScript, setShowScript] = useState(false);
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
   const [isLoaded, setIsLoaded] = useState(false);
 
   const audioSrc = `data:audio/mp3;base64,${audioBase64}`;
@@ -117,6 +123,18 @@ export function PodcastPlayer({
     const mins = Math.floor(seconds / 60);
     const secs = Math.floor(seconds % 60);
     return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const toggleSection = (sectionId: string) => {
+    setExpandedSections((prev) => {
+      const next = new Set(prev);
+      if (next.has(sectionId)) {
+        next.delete(sectionId);
+      } else {
+        next.add(sectionId);
+      }
+      return next;
+    });
   };
 
   return (
@@ -260,32 +278,104 @@ export function PodcastPlayer({
         </div>
       </div>
 
-      {/* Script toggle */}
-      <div className="mt-4">
-        <button
-          onClick={() => setShowScript(!showScript)}
-          className="w-full flex items-center justify-center gap-2 py-3 text-text-muted
-            hover:text-text-primary transition-colors"
-          aria-expanded={showScript}
-        >
-          {showScript ? (
-            <>
-              <ChevronUp className="w-4 h-4" />
-              Hide Script
-            </>
-          ) : (
-            <>
-              <ChevronDown className="w-4 h-4" />
-              Show Script
-            </>
-          )}
-        </button>
+      {/* Transcript Sections */}
+      <div className="mt-6 space-y-3">
+        {/* Intro Section */}
+        {intro && (
+          <div className="glass rounded-xl overflow-hidden">
+            <button
+              onClick={() => toggleSection('intro')}
+              className="w-full flex items-center justify-between p-4 text-left hover:bg-surface/50 transition-colors"
+              aria-expanded={expandedSections.has('intro')}
+            >
+              <span className="font-medium text-text-primary">Introduction</span>
+              {expandedSections.has('intro') ? (
+                <ChevronUp className="w-5 h-5 text-text-muted" />
+              ) : (
+                <ChevronDown className="w-5 h-5 text-text-muted" />
+              )}
+            </button>
+            {expandedSections.has('intro') && (
+              <div className="px-4 pb-4 border-t border-surface">
+                <p className="text-sm text-text-muted leading-relaxed pt-3">
+                  {intro}
+                </p>
+              </div>
+            )}
+          </div>
+        )}
 
-        {showScript && (
-          <div className="glass rounded-xl p-6 mt-2 border-l-4 border-primary">
-            <p className="font-mono text-sm text-text-muted whitespace-pre-wrap leading-relaxed">
-              {script}
-            </p>
+        {/* Story Sections */}
+        {stories.map((story, index) => (
+          <div key={index} className="glass rounded-xl overflow-hidden">
+            <button
+              onClick={() => toggleSection(`story-${index}`)}
+              className="w-full flex items-center justify-between p-4 text-left hover:bg-surface/50 transition-colors"
+              aria-expanded={expandedSections.has(`story-${index}`)}
+            >
+              <div className="flex items-center gap-3">
+                <span className="flex items-center justify-center w-6 h-6 rounded-full bg-primary/20 text-primary text-xs font-bold">
+                  {index + 1}
+                </span>
+                <span className="font-medium text-text-primary">{story.title}</span>
+              </div>
+              {expandedSections.has(`story-${index}`) ? (
+                <ChevronUp className="w-5 h-5 text-text-muted" />
+              ) : (
+                <ChevronDown className="w-5 h-5 text-text-muted" />
+              )}
+            </button>
+            {expandedSections.has(`story-${index}`) && (
+              <div className="px-4 pb-4 border-t border-surface">
+                <p className="text-sm text-text-muted leading-relaxed pt-3">
+                  {story.content}
+                </p>
+                {story.sources && story.sources.length > 0 && (
+                  <div className="mt-4 pt-3 border-t border-surface/50">
+                    <p className="text-xs font-medium text-text-dim mb-2">Sources:</p>
+                    <div className="space-y-1">
+                      {story.sources.map((source, sourceIndex) => (
+                        <a
+                          key={sourceIndex}
+                          href={source.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-2 text-sm text-primary hover:text-primary/80 transition-colors"
+                        >
+                          <ExternalLink className="w-3 h-3 flex-shrink-0" />
+                          <span className="truncate">{source.title || source.url}</span>
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+
+        {/* Outro Section */}
+        {outro && (
+          <div className="glass rounded-xl overflow-hidden">
+            <button
+              onClick={() => toggleSection('outro')}
+              className="w-full flex items-center justify-between p-4 text-left hover:bg-surface/50 transition-colors"
+              aria-expanded={expandedSections.has('outro')}
+            >
+              <span className="font-medium text-text-primary">Closing</span>
+              {expandedSections.has('outro') ? (
+                <ChevronUp className="w-5 h-5 text-text-muted" />
+              ) : (
+                <ChevronDown className="w-5 h-5 text-text-muted" />
+              )}
+            </button>
+            {expandedSections.has('outro') && (
+              <div className="px-4 pb-4 border-t border-surface">
+                <p className="text-sm text-text-muted leading-relaxed pt-3">
+                  {outro}
+                </p>
+              </div>
+            )}
           </div>
         )}
       </div>

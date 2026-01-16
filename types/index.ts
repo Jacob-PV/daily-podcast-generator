@@ -10,11 +10,24 @@ export interface PodcastGenerationRequest {
   topics: string[];
 }
 
+export interface StorySource {
+  title: string;
+  url: string;
+}
+
+export interface PodcastStory {
+  title: string;
+  content: string;
+  sources: StorySource[];
+}
+
 export interface PodcastGenerationResponse {
   audioBase64: string;
-  script: string;
   title: string;
   duration: number;
+  intro: string;
+  stories: PodcastStory[];
+  outro: string;
 }
 
 export interface GenerationStage {
