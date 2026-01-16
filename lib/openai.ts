@@ -1,6 +1,10 @@
 import OpenAI from 'openai';
 import { getTopicsByIds } from './topics';
 import { SEPARATOR_AUDIO_BASE64 } from './separator-audio';
+import { execSync } from 'child_process';
+import { writeFileSync, readFileSync, unlinkSync, mkdirSync, existsSync } from 'fs';
+import { join } from 'path';
+import ffmpegPath from 'ffmpeg-static';
 
 function getOpenAIClient(): OpenAI {
   const apiKey = process.env.OPENAI_API_KEY;
@@ -228,6 +232,62 @@ export async function generateAudio(script: string): Promise<Buffer> {
   return generateSegmentAudio(script);
 }
 
+// Concatenate audio files using ffmpeg (proper MP3 concatenation)
+function concatenateAudioWithFfmpeg(audioBuffers: Buffer[]): Buffer {
+  if (audioBuffers.length === 0) {
+    return Buffer.alloc(0);
+  }
+
+  if (audioBuffers.length === 1) {
+    return audioBuffers[0];
+  }
+
+  // Create temp directory
+  const tempDir = join('/tmp', `podcast-${Date.now()}`);
+  if (!existsSync(tempDir)) {
+    mkdirSync(tempDir, { recursive: true });
+  }
+
+  const inputFiles: string[] = [];
+  const concatListPath = join(tempDir, 'concat.txt');
+  const outputPath = join(tempDir, 'output.mp3');
+
+  try {
+    // Write each audio buffer to a temp file
+    for (let i = 0; i < audioBuffers.length; i++) {
+      const inputPath = join(tempDir, `segment-${i}.mp3`);
+      writeFileSync(inputPath, audioBuffers[i]);
+      inputFiles.push(inputPath);
+    }
+
+    // Create concat list file for ffmpeg
+    const concatList = inputFiles.map(f => `file '${f}'`).join('\n');
+    writeFileSync(concatListPath, concatList);
+
+    // Run ffmpeg to concatenate with re-encoding for format compatibility
+    // Re-encode to ensure all segments (TTS output + separator file) merge properly
+    execSync(
+      `"${ffmpegPath}" -f concat -safe 0 -i "${concatListPath}" -acodec libmp3lame -ar 24000 -ab 128k "${outputPath}" -y`,
+      { stdio: 'pipe' }
+    );
+
+    // Read the output
+    const result = readFileSync(outputPath);
+    return result;
+  } finally {
+    // Clean up temp files
+    for (const file of inputFiles) {
+      try { unlinkSync(file); } catch { /* ignore */ }
+    }
+    try { unlinkSync(concatListPath); } catch { /* ignore */ }
+    try { unlinkSync(outputPath); } catch { /* ignore */ }
+    try {
+      const fs = require('fs');
+      fs.rmdirSync(tempDir);
+    } catch { /* ignore */ }
+  }
+}
+
 // Generate audio for structured podcast with separators between stories
 async function generateStructuredAudio(
   intro: string,
@@ -241,34 +301,26 @@ async function generateStructuredAudio(
     audioBuffers.push(await generateSegmentAudio(intro));
   }
 
-  // Load separator audio once and reuse
-  let separatorAudio: Buffer | null = null;
-  if (stories.length > 0) {
-    separatorAudio = getSeparatorAudio();
-  }
+  // Load separator audio once
+  const separatorAudio = getSeparatorAudio();
 
   // Generate audio for each story with separator between them
   for (let i = 0; i < stories.length; i++) {
     // Add separator before each story (after intro and between stories)
-    if (separatorAudio) {
-      audioBuffers.push(separatorAudio);
-    }
+    audioBuffers.push(separatorAudio);
 
     // Generate story audio (use content field)
     audioBuffers.push(await generateSegmentAudio(stories[i].content));
   }
 
   // Add separator before outro
-  if (separatorAudio && outro) {
-    audioBuffers.push(separatorAudio);
-  }
-
-  // Generate outro audio
   if (outro) {
+    audioBuffers.push(separatorAudio);
     audioBuffers.push(await generateSegmentAudio(outro));
   }
 
-  return Buffer.concat(audioBuffers);
+  // Use ffmpeg to properly concatenate all audio segments
+  return concatenateAudioWithFfmpeg(audioBuffers);
 }
 
 export async function generatePodcast(topicIds: string[]): Promise<{
