@@ -1,14 +1,6 @@
 import OpenAI from 'openai';
 import { getTopicsByIds } from './topics';
-import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'fs';
-import { join } from 'path';
-import ffmpeg from 'fluent-ffmpeg';
-import ffmpegStatic from 'ffmpeg-static';
-
-// Set ffmpeg path
-if (ffmpegStatic) {
-  ffmpeg.setFfmpegPath(ffmpegStatic);
-}
+import { SEPARATOR_AUDIO_BASE64 } from './separator-audio';
 
 function getOpenAIClient(): OpenAI {
   const apiKey = process.env.OPENAI_API_KEY;
@@ -174,66 +166,18 @@ async function generateSegmentAudio(text: string): Promise<Buffer> {
   return Buffer.concat(audioBuffers);
 }
 
-// Adjust volume of audio file using ffmpeg
-async function adjustVolume(inputBuffer: Buffer, volumeLevel: number = 0.3): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const tempDir = join(process.cwd(), '.tmp');
-    const inputPath = join(tempDir, `input-${Date.now()}.mp3`);
-    const outputPath = join(tempDir, `output-${Date.now()}.mp3`);
-
-    // Ensure temp directory exists
-    if (!existsSync(tempDir)) {
-      const { mkdirSync } = require('fs');
-      mkdirSync(tempDir, { recursive: true });
-    }
-
-    // Write input buffer to temp file
-    writeFileSync(inputPath, inputBuffer);
-
-    ffmpeg(inputPath)
-      .audioFilters(`volume=${volumeLevel}`)
-      .toFormat('mp3')
-      .on('end', () => {
-        const outputBuffer = readFileSync(outputPath);
-        // Clean up temp files
-        try {
-          unlinkSync(inputPath);
-          unlinkSync(outputPath);
-        } catch {
-          // Ignore cleanup errors
-        }
-        resolve(outputBuffer);
-      })
-      .on('error', (err: Error) => {
-        // Clean up temp files on error
-        try {
-          if (existsSync(inputPath)) unlinkSync(inputPath);
-          if (existsSync(outputPath)) unlinkSync(outputPath);
-        } catch {
-          // Ignore cleanup errors
-        }
-        reject(err);
-      })
-      .save(outputPath);
-  });
-}
-
-// Cache for the volume-adjusted separator audio
+// Cache for the separator audio buffer
 let cachedSeparatorAudio: Buffer | null = null;
 
-// Get the signature audio separator from file with volume adjustment
-async function getSeparatorAudio(): Promise<Buffer> {
+// Get the signature audio separator from embedded base64 data
+function getSeparatorAudio(): Buffer {
   // Return cached version if available
   if (cachedSeparatorAudio) {
     return cachedSeparatorAudio;
   }
 
-  // Read the ambient magic wash audio file as the separator
-  const audioPath = join(process.cwd(), 'audio', 'ambient-magic-wash.mp3');
-  const rawAudio = readFileSync(audioPath);
-
-  // Adjust volume to 30% to blend well with TTS narration
-  cachedSeparatorAudio = await adjustVolume(rawAudio, 0.3);
+  // Decode the embedded base64 audio
+  cachedSeparatorAudio = Buffer.from(SEPARATOR_AUDIO_BASE64, 'base64');
   return cachedSeparatorAudio;
 }
 
@@ -255,10 +199,10 @@ async function generateStructuredAudio(
     audioBuffers.push(await generateSegmentAudio(intro));
   }
 
-  // Load separator audio file once and reuse (with volume adjustment)
+  // Load separator audio once and reuse
   let separatorAudio: Buffer | null = null;
   if (stories.length > 0) {
-    separatorAudio = await getSeparatorAudio();
+    separatorAudio = getSeparatorAudio();
   }
 
   // Generate audio for each story with separator between them
