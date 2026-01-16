@@ -9,7 +9,15 @@ function getOpenAIClient(): OpenAI {
   return new OpenAI({ apiKey });
 }
 
-export async function generatePodcastScript(topicIds: string[]): Promise<{ script: string; title: string }> {
+interface StructuredScript {
+  title: string;
+  intro: string;
+  stories: string[];
+  outro: string;
+  fullScript: string;
+}
+
+export async function generatePodcastScript(topicIds: string[]): Promise<StructuredScript> {
   const openai = getOpenAIClient();
   const topics = getTopicsByIds(topicIds);
   const topicNames = topics.map((t) => t.name).join(', ');
@@ -34,22 +42,29 @@ export async function generatePodcastScript(topicIds: string[]): Promise<{ scrip
 
 Requirements:
 1. Start with a warm, engaging introduction mentioning it's the listener's personalized daily podcast
-2. Cover 2-3 interesting developments or stories for each topic
-3. Use smooth transitions between topics
+2. Cover 2-3 interesting stories total across the selected topics
+3. Each story should be a self-contained segment that can stand alone
 4. Include thought-provoking insights or analysis
 5. End with a brief summary and an uplifting closing
 
-Format the response as JSON:
+IMPORTANT: Format the response as JSON with separate segments for the intro, each story, and the outro. This allows us to add audio transitions between stories.
+
 {
   "title": "A catchy episode title",
-  "script": "The full podcast script here..."
+  "intro": "The opening introduction segment...",
+  "stories": [
+    "First story segment covering one topic...",
+    "Second story segment covering another topic...",
+    "Third story segment if applicable..."
+  ],
+  "outro": "The closing summary and farewell..."
 }
 
-Make the script sound natural when read aloud - use conversational language, rhetorical questions, and varied sentence structures.`,
+Make each segment sound natural when read aloud - use conversational language, rhetorical questions, and varied sentence structures. Do NOT include transition phrases between stories as we will add an audio jingle between them.`,
       },
     ],
     temperature: 0.7,
-    max_tokens: 2000,
+    max_tokens: 2500,
   });
 
   const content = response.choices[0]?.message?.content;
@@ -67,28 +82,52 @@ Make the script sound natural when read aloud - use conversational language, rhe
     }
 
     const parsed = JSON.parse(jsonContent.trim());
+
+    // Construct full script for display purposes
+    const fullScript = [
+      parsed.intro,
+      ...parsed.stories,
+      parsed.outro
+    ].join('\n\n---\n\n');
+
     return {
       title: parsed.title,
-      script: parsed.script,
+      intro: parsed.intro,
+      stories: parsed.stories || [],
+      outro: parsed.outro,
+      fullScript,
     };
   } catch {
-    // If JSON parsing fails, try to extract content
+    // If JSON parsing fails, treat as single segment (backwards compatibility)
     return {
       title: `Your Daily Podcast - ${today}`,
-      script: content,
+      intro: content,
+      stories: [],
+      outro: '',
+      fullScript: content,
     };
   }
 }
 
-export async function generateAudio(script: string): Promise<Buffer> {
+// Generate audio for a text segment, handling chunking for long text
+async function generateSegmentAudio(text: string): Promise<Buffer> {
   const openai = getOpenAIClient();
+  const MAX_CHARS = 4000; // OpenAI TTS limit with buffer
 
-  // OpenAI TTS has a 4096 character limit, so we need to split long scripts
-  const MAX_CHARS = 4000; // Leave some buffer
+  // Split text into chunks at sentence boundaries if needed
+  if (text.length <= MAX_CHARS) {
+    const response = await openai.audio.speech.create({
+      model: 'tts-1',
+      voice: 'onyx',
+      input: text,
+      speed: 1.0,
+    });
+    return Buffer.from(await response.arrayBuffer());
+  }
+
+  // Handle long segments by chunking
   const chunks: string[] = [];
-
-  // Split script into chunks at sentence boundaries
-  const sentences = script.split(/(?<=[.!?])\s+/);
+  const sentences = text.split(/(?<=[.!?])\s+/);
   let currentChunk = '';
 
   for (const sentence of sentences) {
@@ -105,9 +144,7 @@ export async function generateAudio(script: string): Promise<Buffer> {
     chunks.push(currentChunk.trim());
   }
 
-  // Generate audio for each chunk
   const audioBuffers: Buffer[] = [];
-
   for (const chunk of chunks) {
     const response = await openai.audio.speech.create({
       model: 'tts-1',
@@ -115,12 +152,73 @@ export async function generateAudio(script: string): Promise<Buffer> {
       input: chunk,
       speed: 1.0,
     });
-
-    const arrayBuffer = await response.arrayBuffer();
-    audioBuffers.push(Buffer.from(arrayBuffer));
+    audioBuffers.push(Buffer.from(await response.arrayBuffer()));
   }
 
-  // Concatenate all audio buffers
+  return Buffer.concat(audioBuffers);
+}
+
+// Generate the signature audio separator (1-2 second musical transition)
+async function generateSeparator(): Promise<Buffer> {
+  const openai = getOpenAIClient();
+
+  // Use a soft musical phrase that works well with TTS
+  // The "..." creates a natural pause, and we use a different voice for variety
+  const response = await openai.audio.speech.create({
+    model: 'tts-1',
+    voice: 'shimmer', // Different voice for the separator adds distinction
+    input: '...', // Brief pause creates a clean audio break
+    speed: 0.8, // Slightly slower for emphasis
+  });
+
+  return Buffer.from(await response.arrayBuffer());
+}
+
+export async function generateAudio(script: string): Promise<Buffer> {
+  // Legacy function for backwards compatibility
+  return generateSegmentAudio(script);
+}
+
+// Generate audio for structured podcast with separators between stories
+async function generateStructuredAudio(
+  intro: string,
+  stories: string[],
+  outro: string
+): Promise<Buffer> {
+  const audioBuffers: Buffer[] = [];
+
+  // Generate intro audio
+  if (intro) {
+    audioBuffers.push(await generateSegmentAudio(intro));
+  }
+
+  // Generate separator once and reuse
+  let separatorAudio: Buffer | null = null;
+  if (stories.length > 0) {
+    separatorAudio = await generateSeparator();
+  }
+
+  // Generate audio for each story with separator between them
+  for (let i = 0; i < stories.length; i++) {
+    // Add separator before each story (after intro and between stories)
+    if (separatorAudio) {
+      audioBuffers.push(separatorAudio);
+    }
+
+    // Generate story audio
+    audioBuffers.push(await generateSegmentAudio(stories[i]));
+  }
+
+  // Add separator before outro
+  if (separatorAudio && outro) {
+    audioBuffers.push(separatorAudio);
+  }
+
+  // Generate outro audio
+  if (outro) {
+    audioBuffers.push(await generateSegmentAudio(outro));
+  }
+
   return Buffer.concat(audioBuffers);
 }
 
@@ -130,20 +228,22 @@ export async function generatePodcast(topicIds: string[]): Promise<{
   title: string;
   duration: number;
 }> {
-  // Generate script
-  const { script, title } = await generatePodcastScript(topicIds);
+  // Generate structured script
+  const { intro, stories, outro, fullScript, title } = await generatePodcastScript(topicIds);
 
-  // Generate audio
-  const audioBuffer = await generateAudio(script);
+  // Generate audio with separators between segments
+  const audioBuffer = await generateStructuredAudio(intro, stories, outro);
   const audioBase64 = audioBuffer.toString('base64');
 
-  // Estimate duration (roughly 150 words per minute for TTS)
-  const wordCount = script.split(/\s+/).length;
-  const duration = Math.ceil((wordCount / 150) * 60);
+  // Estimate duration (roughly 150 words per minute for TTS, plus separator time)
+  const wordCount = fullScript.split(/\s+/).length;
+  const separatorCount = stories.length + (outro ? 1 : 0); // Separators between segments
+  const separatorDuration = separatorCount * 1.5; // ~1.5 seconds per separator
+  const duration = Math.ceil((wordCount / 150) * 60) + separatorDuration;
 
   return {
     audioBase64,
-    script,
+    script: fullScript,
     title,
     duration,
   };
